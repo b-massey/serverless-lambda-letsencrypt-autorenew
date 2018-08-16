@@ -18,3 +18,7 @@ var/
 
 # Serverless directories
 .serverless
+src/
+node_modules/
+
+package*.json
