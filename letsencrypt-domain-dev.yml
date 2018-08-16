@@ -1,0 +1,13 @@
+directory: https://acme-staging-v02.api.letsencrypt.org/directory
+base_path: letslambda
+contact:
+  - email:systems-team@7digital.com
+domains:
+  - name: '*.7digital.in'
+    r53_zone: acme.7digital.com
+    countryName: GB
+    reuse_key: true
+  - name: '*.test.7digital.com'
+    r53_zone: acme.7digital.com
+    countryName: GB
+    reuse_key: true

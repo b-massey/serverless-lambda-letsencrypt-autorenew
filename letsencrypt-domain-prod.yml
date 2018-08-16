@@ -1,0 +1,13 @@
+#directory: https://acme-v02.api.letsencrypt.org/directory
+directory: https://acme-staging-v02.api.letsencrypt.org/directory
+base_path: letslambda
+info:
+  - mailto:myemail@example.com
+domains:
+  - name: test.7digital.com
+    r53_zone: acme.7digital.com
+    countryName: GB
+    elb: lb_name
+    elb_port: 443
+    elb_region: eu-west-2
+    reuse_key: true
