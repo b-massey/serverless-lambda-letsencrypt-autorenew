@@ -5,6 +5,7 @@ import logging
 import os
 import requests
 import six
+import time
 import yaml
 
 from acme import challenges
@@ -162,11 +163,11 @@ def get_dns_challenge(authorization_resource):
     return list(dns_challenges)[0]
 
 
-def reset_route53_letsencrypt_record(conf, zone_id, zone_name, rr_fqdn):
+def reset_route53_letsencrypt_record(zone_id, rr_fqdn):
     """
     Remove previous challenges from the hosted zone
     """
-    r53 = boto3.client('route53', config=Config(signature_version='v4', region_name=conf['region']))
+    r53 = boto3.client('route53', config=Config(signature_version='v4', region_name=os.getenv('S3_REGION')))
 
     if rr_fqdn.endswith('.') is not True:
         rr_fqdn += '.'
@@ -202,11 +203,11 @@ def reset_route53_letsencrypt_record(conf, zone_id, zone_name, rr_fqdn):
             })
             try:
                 res = r53.change_resource_record_sets(HostedZoneId=zone_id, ChangeBatch=r53_changes)
-                LOG.info("Removed resource record '{0}' from hosted zone '{1}'".format(rr_fqdn, zone_name))
+                LOG.debug("Removed resource record '{0}' from hosted zone id '{1}'".format(rr_fqdn, zone_id))
                 return True
 
             except ClientError as e:
-                LOG.error("Failed to remove resource record '{0}' from hosted zone '{1}'".format(rr_fqdn, zone_name))
+                LOG.error("Failed to remove resource record '{0}' from hosted zone '{1}'".format(rr_fqdn, zone_id))
                 LOG.error("Error: {0}".format(e))
                 return None
 
@@ -220,61 +221,159 @@ def answer_dns_challenge(conf, client, domain, challenge):
     Compute the required answer and set it in the DNS record
     for the domain.
     """
+
+    account_key = load_letsencrypt_account_key(conf)
+
     authorization = "{}.{}".format(
         base64.urlsafe_b64encode(challenge.get("token")).decode("ascii").replace("=", ""),
-        base64.urlsafe_b64encode(client.key.thumbprint()).decode("ascii").replace("=", "")
-        )
+        base64.urlsafe_b64encode(account_key.thumbprint()).decode("ascii").replace("=", "") )
 
-    dns_response = base64.urlsafe_b64encode(hashlib.sha256(authorization.encode()).digest()).decode("ascii").replace("=", "")
+    
+    #dns_response = base64.urlsafe_b64encode(hashlib.sha256(authorization.encode()).digest()).decode("ascii").replace("=", "")
+
+    dns_response = authorization = base64.urlsafe_b64encode(challenge.get("token")).decode("ascii").replace("=", "")
+
+    LOG.info("authorization ='{0}' dns_response= '{1}' for Id".format(authorization, dns_response))
+
+    domain_name = domain['name'].replace('*.','')
+    acme_domain = "_acme-challenge.{0}.{1}.".format(domain_name,domain['r53_zone'])
 
     # Let's update the DNS on our R53 account
-    zone_id = get_route53_zone_id(conf, domain['r53_zone'])
+    zone_id = get_route53_zone_id(domain['r53_zone'])
     if zone_id == None:
-        LOG.error("Cannot determine zone id for zone '{0}'".format(domain['r53_zone']))
+        LOG.error("Cannot find R53 zone {0}, are you controling it ?".format(domain['r53_zone']))
         return None
 
-    LOG.info("Domain '{0}' has '{1}' for Id".format(domain['r53_zone'], zone_id))
+    LOG.debug("Domain '{0}' has Id'{1}'".format(domain['r53_zone'], zone_id))
 
-    zone_id = get_route53_zone_id(conf, domain['r53_zone'])
-    if zone_id == None:
-        LOG.error("Cannot find R53 zone {}, are you controling it ?".format(domain['r53_zone']))
-        return None
-
-    acme_domain = "_acme-challenge.{}".format(domain['name'])
-
-
-    res = reset_route53_letsencrypt_record(conf, zone_id, domain['name'], acme_domain)
+    res = reset_route53_letsencrypt_record(zone_id, acme_domain)
     if res == None:
-        LOG.error("An error occured while trying to remove a previous resource record. Skipping domain {0}".format(domain['name']))
+        LOG.error("An error occured while trying to remove a previous resource record. Skipping domain {0}".format(domain_name))
         return None
 
-    add_status == None
-    #add_status = create_route53_letsencrypt_record(conf, zone_id, domain['name'], acme_domain, 'TXT', '"' + dns_response + '"')
+    add_status = create_route53_letsencrypt_record(zone_id, domain['r53_zone'], acme_domain, 'TXT', '"' + dns_response + '"')
     if add_status == None:
-        LOG.error("An error occured while creating the dns record. Skipping domain {0}".format(domain['name']))
+        LOG.error("An error occured while creating the dns record. Skipping domain {0}".format(domain_name))
         return None
 
-    #add_status = wait_letsencrypt_record_insync(conf, add_status)
+    add_status = wait_letsencrypt_record_insync(add_status)
     if add_status == None:
-        LOG.error("Cannot determine if the dns record has been correctly created. Skipping domain {0}".format(domain['name']))
+        LOG.error("Cannot determine if the dns record has been correctly created. Skipping domain {0}".format(domain_name))
         return None
 
     if add_status == False:
-        LOG.error("We updated R53 but the servers didn't sync within 60 seconds. Skipping domain {0}".format(domain['name']))
+        LOG.error("We updated R53 but the servers didn't sync within 60 seconds. Skipping domain {0}".format(domain_name))
         return None
 
     if add_status is not True:
-        LOG.error("An unexpected result code has been returned. Please report this bug. Skipping domain {0}".format(domain['name']))
+        LOG.error("An unexpected result code has been returned. Please report this bug. Skipping domain {0}".format(domain_name))
         LOG.error("add_status={0}".format(add_status))
         return None
 
     ## Now, let's tell the ACME server that we are ready
     challenge_response = challenges.DNS01Response(key_authorization=authorization)
+    LOG.info("challenge_response '{0}'".format(challenge_response))
+
     #challenge_resource = client.answer_challenge(challenge, challenge_response)
 
-    if challenge_resource.body.error != None:
-        return False
+    #if challenge_resource.body.error != None:
+        #return False
 
+    return True
+
+def get_route53_zone_id(zone_name):
+    r53 = boto3.client('route53', config=Config(signature_version='v4', region_name=os.getenv('S3_REGION')))
+
+    if zone_name.endswith('.') is not True:
+        zone_name += '.'
+
+    try:
+        dn = ''
+        zi = ''
+        zone_list = r53.list_hosted_zones_by_name(DNSName=zone_name)
+        while True:
+            for zone in zone_list['HostedZones']:
+                if zone['Name'] == zone_name:
+                    return zone['Id']
+
+            if zone_list['IsTruncated'] is not True:
+                return None
+
+            dn = zone_list['NextDNSName']
+            zi = zone_list['NextHostedZoneId']
+
+            LOG.debug("Continuing to fetch mode Route53 hosted zones...")
+            zone_list = r53.list_hosted_zones_by_name(DNSName=dn, HostedZoneId=zi)
+
+    except ClientError as e:
+        LOG.error("Failed to retrieve Route53 zone Id for '{0}'".format(zone_name))
+        LOG.error("Error: {0}".format(e))
+        return None
+
+    return None
+
+
+def create_route53_letsencrypt_record(zone_id, zone_name, rr_fqdn, rr_type, rr_value):
+    """
+    Create the required dns record for letsencrypt to verify
+    """
+    r53 = boto3.client('route53', config=Config(signature_version='v4', region_name=os.getenv('S3_REGION')))
+
+    if rr_fqdn.endswith('.') is not True:
+        rr_fqdn += '.'
+
+    LOG.info("Name : {0}".format(rr_fqdn)) 
+         
+    r53_changes = { 'Changes': [{
+        'Action': 'CREATE',
+        'ResourceRecordSet': {
+            'Name': rr_fqdn,
+            'Type': rr_type,
+            'TTL': 60,
+            'ResourceRecords': [{
+                'Value': rr_value
+            }]
+        }
+    }]}
+
+    try:
+        res = r53.change_resource_record_sets(HostedZoneId=zone_id, ChangeBatch=r53_changes)
+        LOG.info("Create letsencrypt verification record '{0}' in hosted zone '{1}'".format(rr_fqdn, zone_id))
+        return res
+
+    except ClientError as e:
+        LOG.error("Failed to create resource record '{0}' in hosted zone '{1}'".format(rr_fqdn, zone_id))
+        LOG.error("Error: {0}".format(e))
+        return None
+
+def wait_letsencrypt_record_insync(r53_status):
+    """
+    Wait until the new record set has been created
+    """
+    r53 = boto3.client('route53', config=Config(signature_version='v4', region_name=os.getenv('S3_REGION')))
+
+    LOG.debug("Waiting for DNS to synchronize with new TXT value for change id: {0}".format(r53_status['ChangeInfo']['Id']))
+    timeout = 60
+
+    status = r53_status['ChangeInfo']['Status']
+    while status != 'INSYNC':
+        sleep(5)
+        timeout -= 5
+        try:
+            r53_status = r53.get_change(Id=r53_status['ChangeInfo']['Id'])
+            status = r53_status['ChangeInfo']['Status']
+
+            LOG.debug("Waiting for DNS to synchronize with new TXT: time {0}, {1}".format(timeout,r53_status))
+
+            if timeout <= -1:
+                return False
+
+        except ClientError as e:
+            LOG.error("Failed to retrieve record creation status.")
+            LOG.error("Error: {0}".format(e))
+            return None
+
+    LOG.debug("Route53 synchronized in {0:d} seconds.".format(60-timeout))
     return True
 
 
