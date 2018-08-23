@@ -272,6 +272,7 @@ def answer_dns_challenge(conf, client, domain, challenge):
 
     ## Now, let's tell the ACME server that we are ready
     challenge_response = challenges.DNS01Response(key_authorization=authorization)
+    challenge_response.verify()
     LOG.info("challenge_response '{0}'".format(challenge_response))
 
     #challenge_resource = client.answer_challenge(challenge, challenge_response)
