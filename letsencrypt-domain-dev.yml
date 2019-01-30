@@ -7,7 +7,7 @@ domains:
     r53_zone: acme.7digital.com
     countryName: GB
     reuse_key: true
-  - name: '*.test.7digital.com'
+  - name: '*.test.7digital.in'
     r53_zone: acme.7digital.com
     countryName: GB
     reuse_key: true
