@@ -1,27 +1,18 @@
-# Welcome to Serverless!
+# letsencrypt-autorenew
 #
-# This file is the main config file for your service.
-# It's very minimal at this point and uses default values.
-# You can always add more config options for more control.
-# We've included some commented out config examples here.
-# Just uncomment any of them to get that config option.
-#
-# For full config options, check the docs:
-#    docs.serverless.com
-#
-# Happy Coding!
 
-service: letsencrypt-route53 # NOTE: update this with your service name
+service: letsencrypt-autorenew
 
-# You can pin your service to only deploy with a specific Serverless version
-# Check out our docs for more details
-# frameworkVersion: "=X.X.X"
-
-plugins:
-  - serverless-python-requirements
 custom:
-  bucket: 7digital-acme-test
-  R53_Domain: acme.7digital.com
+  stages:
+    - dev
+    - test
+    - prod  
+  bucket: 
+    dev: letsencrypt-acme-dev
+    test: letsencrypt-acme-test
+    prod: letsencrypt-acme-prod
+  R53_Domain: acme.example.com
 
   pythonRequirements:
     dockerizePip: true
@@ -30,18 +21,18 @@ Resources:
   ACMES3Bucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: 7digital-acme-test
+      BucketName: ${self:custom.bucket.${self:provider.stage}}
 
 provider:
   name: aws
   stackTags: 
-    env : test 
+    env : ${self:provider.stage}
     app : acme
     cost-centre : System
   runtime: python2.7
-  timeout: 90 
+  timeout: 300 
 
-  stage: dev
+  stage:  ${opt:stage, 'dev'}
   region: eu-west-2
 
   iamRoleStatements:
@@ -50,7 +41,7 @@ provider:
         - "s3:ListBucket"
         - "s3:PutObject"
         - "s3:GetObject"
-      Resource: "arn:aws:s3:::${self:custom.bucket}/*"
+      Resource: "arn:aws:s3:::${self:custom.bucket.${self:provider.stage}}/*"
     - Effect: "Allow"
       Action:        
         - "route53:GetChange"
@@ -61,12 +52,19 @@ provider:
 
 functions:
   autorenew:
-    handler: handler.lambda_handler
-
+    handler: letsencrypt_autorenew.letsencrypt_handler
+    name: ${self:service.name}-${self:provider.stage}
+    schedule: 
+      #rate: cron(30 1 * * ? *)
+      rate: rate(10 minutes)
+      enabled: false
+    
     environment:
-      S3_BUCKET: ${self:custom.bucket}
+      ENVIRONMENT: ${self:provider.stage}
+      S3_BUCKET: ${self:custom.bucket.${self:provider.stage}}
       S3_REGION: ${self:provider.region}
       R53_DOMAIN: ${self:custom.R53_Domain}
-      DOMAIN_CONFIG: "letsencrypt-domain-${self:provider.stage}.yml"
+      DOMAIN_CONFIG: "letsencrypt-domains-${self:provider.stage}.yml"
 
-
+plugins:
+  - serverless-python-requirements

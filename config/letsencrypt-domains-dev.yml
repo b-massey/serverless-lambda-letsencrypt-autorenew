@@ -1,0 +1,10 @@
+directory: https://acme-staging-v02.api.letsencrypt.org/directory
+contact:
+  - devops@example.com
+domains:
+  - name: '*.acme.example.com'
+    reuse_key: true
+    key_bits: 4096
+  - name: 'test.example.com'
+    reuse_key: true
+    key_bits: 2048
