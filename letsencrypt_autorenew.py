@@ -45,26 +45,18 @@ def get_route53_zone_id(zone_name):
     """
     route_53 = boto3.client('route53', config=Config(signature_version='v4',
                                                      region_name=os.getenv('S3_REGION')))
-    if zone_name.endswith('.') is not True:
+    if not zone_name.endswith('.'):
         zone_name += '.'
 
     try:
-        dns_name = ''
-        zone_id = ''
-        zone_list = route_53.list_hosted_zones_by_name(DNSName=zone_name)
-        while True:
-            for zone in zone_list['HostedZones']:
+        paginator = route_53.get_paginator('list_hosted_zones')
+        for page in paginator.paginate():
+            for zone in page['HostedZones']:
                 if zone['Name'] == zone_name:
                     return zone['Id']
 
-            if zone_list['IsTruncated'] is not True:
-                return None
-
-            dns_name = zone_list['NextDNSName']
-            zone_id = zone_list['NextHostedZoneId']
-
-            LOG.debug("Continuing to fetch mode Route53 hosted zones...")
-            zone_list = route_53.list_hosted_zones_by_name(DNSName=dns_name, HostedZoneId=zone_id)
+        if page['IsTruncated'] is not True:
+            return None
 
     except ClientError as client_error:
         LOG.error("Failed to retrieve Route53 zone Id for '%s' ", zone_name)
@@ -214,48 +206,40 @@ def reset_route53_letsencrypt_record(zone_id, rr_fqdn):
     if rr_fqdn.endswith('.') is not True:
         rr_fqdn += '.'
 
-    rr_list = []
-    results = r53.list_resource_record_sets(
-                HostedZoneId=zone_id,
-                StartRecordType='TXT',
-                StartRecordName=rr_fqdn,
-                MaxItems='100')
-
-    while True:
-        rr_list = rr_list + results['ResourceRecordSets']
-        if results['IsTruncated'] is False:
-            break
-
-        results = r53.list_resource_record_sets(
-            HostedZoneId=zone_id,
-            StartRecordType='TXT',
-            StartRecordName=results['NextRecordName'])
-
     r53_changes = {'Changes': []}
-    for r_set in rr_list:
-        if r_set['Name'] == rr_fqdn and r_set['Type'] == 'TXT':
-            r53_changes['Changes'].append({
-                'Action': 'DELETE',
-                'ResourceRecordSet': {
-                    'Name': r_set['Name'],
-                    'Type': r_set['Type'],
-                    'TTL': r_set['TTL'],
-                    'ResourceRecords': r_set['ResourceRecords']
-                }
-            })
-            try:
-                res = r53.change_resource_record_sets(HostedZoneId=zone_id, ChangeBatch=r53_changes)
-                LOG.info("Removed record '%s' from hosted zone '%s'", rr_fqdn, zone_id)
-                return True
 
-            except ClientError as client_error:
-                LOG.error("Failed to remove record '%s' from hosted zone '%s", rr_fqdn, zone_id)
-                LOG.error("Error: %s", client_error)
-                return None
+    route_53 = boto3.client('route53', config=Config(signature_version='v4',
+                                                     region_name='eu-west-2'))
+    
+    paginator = route_53.get_paginator('list_resource_record_sets')
+    for record_page in paginator.paginate(HostedZoneId = zone_id):
+        for record_set in record_page['ResourceRecordSets']:
+            if record_set['Name'] == rr_fqdn and record_set['Type'] == 'TXT':
+                print("add Change record")
+                r53_changes['Changes'].append({
+                    'Action': 'DELETE',
+                    'ResourceRecordSet': {
+                        'Name': record_set['Name'],
+                        'Type': record_set['Type'],
+                        'TTL': record_set['TTL'],
+                        'ResourceRecords': record_set['ResourceRecords']
+                    }
+                })
 
-            break
+    print(r53_changes)
+    if r53_changes['Changes']:
+        try:
+            res = route_53.change_resource_record_sets(HostedZoneId=zone_id, ChangeBatch=r53_changes)
+            LOG.info("Removed record '%s' from hosted zone '%s'", rr_fqdn, zone_id)
+            return True
 
-    LOG.debug("No Resource Record to delete.")
+        except ClientError as client_error:
+            LOG.error("Failed to remove record '%s' from hosted zone '%s", rr_fqdn, zone_id)
+            LOG.error("Error: %s", client_error)
+            return None
+    else:
+        LOG.debug("No Resource Record to delete.")
+        print("nothing to delete")
     return False
 
 def create_route53_letsencrypt_record(zone_id, rr_fqdn, rr_value):
@@ -401,6 +385,10 @@ def letsencrypt_handler(event, context):
     # Get R53 Zone ID
     conf['r53_zone'] = os.getenv('R53_DOMAIN')
     conf['r53_zone_id'] = get_route53_zone_id(conf['r53_zone'])
+
+    if conf['r53_zone_id'] is None:
+        LOG.Error("Unable to find Route 53 Zone ID for Zone '%s' ", conf['r53_zone'])
+        return
 
     LOG.debug("Domain '%s' has Id '%s'", conf['r53_zone'], conf['r53_zone_id'])
 
