@@ -108,6 +108,23 @@ def save_to_s3(conf, s3_key, content, encrypt=False):
         LOG.error("Error: {0}".format(client_error))
     return None
 
+def check_certtificate_expiration(conf, cert_name):
+
+    cert_file = load_from_s3(conf, cert_name)
+    if not cert_file:
+        LOG.debug("No Certificate '%s' found in S3", cert_file)
+        return False
+
+    pem_certificate = crypto.load_certificate(crypto.FILETYPE_PEM, cert_file)
+    cert_expires = datetime.strptime(pem_certificate.get_notAfter(),"%Y%m%d%H%M%SZ")
+    days_remaining = (cert_expires - datetime.utcnow()).days
+    LOG.debug("Certificate validity %s, remaining %s", str(cert_expires), str(days_remaining))
+
+    if days_remaining < 30
+        return True
+
+    return False
+
 def load_letsencrypt_account_key(conf):
     """
     ACME Account key
@@ -321,7 +338,8 @@ def answer_dns_challenge(conf, client, domain, challenge):
 
     LOG.info("authorization ='{0}' dns_response= '{1}' for Id".format(authorization, dns_response))
 
-    domain_name = '.'.join(domain['name'].split('.')[1:])
+    #domain_name = '.'.join(domain['name'].split('.')[1:]) 
+    domain_name = domain['name'].replace('*.','') if domain['name'].startswith('*.') else domain['name']
     acme_domain = "_acme-challenge.%s.%s" % (domain_name, conf['r53_zone'])
 
 
@@ -405,6 +423,11 @@ def letsencrypt_handler(event, context):
         if 'reuse_key' not in domain.keys():
             domain['reuse_key'] = True
 
+        cert_renew = check_certtificate_expiration(conf, domain['cert_name']+'.pem') 
+        if not cert_renew:
+            LOG.debug("Certificate for domain '%s' does not need renewal", domain['name'])
+            continue
+
         LOG.debug("Generate CSR for domain '%s' ", domain['name'])
         (cert_key, pem_csr) = generate_csr(conf, domain)
 
@@ -428,8 +451,6 @@ def letsencrypt_handler(event, context):
         # Finalise order and retrieve certificate
         order_resource = acme_client.poll_and_finalize(order_resource)
         pem_certificate = crypto.load_certificate(crypto.FILETYPE_PEM, order_resource.fullchain_pem)
-
-        LOG.info("pem_certificate = %s", pem_certificate)
 
         if order_resource.fullchain_pem is not None:
             LOG.info("Saving certificate to S3")
