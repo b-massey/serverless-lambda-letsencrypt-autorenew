@@ -166,7 +166,7 @@ def get_acme_client(conf, domain_conf):
     client_acme = client.ClientV2(directory_acme, net)
 
 
-    if 'account_uri' not in domain_conf:
+    if domain_conf['account_uri']:
         LOG.debug("Registering with ACME server with the new account key")
         new_reg = messages.NewRegistration.from_data(
             email=(', '.join(domain_conf['contact'])),
