@@ -120,23 +120,22 @@ def check_certtificate_expiration(conf, cert_name):
     days_remaining = (cert_expires - datetime.utcnow()).days
     LOG.debug("Certificate validity %s, remaining %s", str(cert_expires), str(days_remaining))
 
-    if days_remaining < 30
+    if days_remaining < 30:
         return True
 
     return False
 
-def load_letsencrypt_account_key(conf):
+def load_letsencrypt_account_key(conf, account_uri):
     """
     ACME Account key
     """
-    new_account_needed = False
+    acc_key_str = None 
 
-    # If the Account key exist in S3, laodt it. Else generate new key for account
-    LOG.debug("Loading account key from s3")
-    acc_key_str = load_from_s3(conf, conf['account_key'])
+    if account_uri:
+        LOG.debug("Loading account key from s3")
+        acc_key_str = load_from_s3(conf, conf['account_key'])
 
     if acc_key_str is None:
-        new_account_needed = True
         LOG.debug("Generating new Private key") 
         account_key = rsa.generate_private_key(
                         public_exponent=65537,
@@ -147,18 +146,18 @@ def load_letsencrypt_account_key(conf):
                         format=serialization.PrivateFormat.TraditionalOpenSSL,
                         encryption_algorithm=serialization.NoEncryption())
 
-        #LOG.info("account_key = '{0}'".format(acc_key_str))
-        #save_to_s3(conf, conf['account_key'], acc_key_str, True)
+        LOG.debug("Save account key to S3")
+        save_to_s3(conf, conf['account_key'], acc_key_str, True)
     else:
         account_key = load_pem_private_key(acc_key_str, None, default_backend())
 
-    return new_account_needed, account_key
+    return account_key
 
 def get_acme_client(conf, domain_conf):
     """
     ACME Client
     """
-    new_account_needed, account_key = load_letsencrypt_account_key(conf)
+    account_key = load_letsencrypt_account_key(conf, domain_conf['account_uri'])
 
     a_key = jose.JWKRSA(key=account_key)
     net = client.ClientNetwork(a_key)
@@ -167,25 +166,30 @@ def get_acme_client(conf, domain_conf):
     client_acme = client.ClientV2(directory_acme, net)
 
 
-    if new_account_needed:
+    if 'account_uri' not in domain_conf:
         LOG.debug("Registering with ACME server with the new account key")
         new_reg = messages.NewRegistration.from_data(
             email=(', '.join(domain_conf['contact'])),
             terms_of_service_agreed=True)
         registration_resource = client_acme.new_account(new_reg)
+        domain_conf['account_uri'] = registration_resource.uri
+
+        LOG.debug("Write Account URI '%s' into Config file ", domain_conf['account_uri'])
+        new_domain_conf = yaml.dump(domain_conf, default_flow_style = False)
+        save_to_s3(conf, conf['config_file'], new_domain_conf)
     else:
         registration = messages.Registration(
             key=a_key,
             contact=tuple(domain_conf['contact']))
         registration_resource = messages.RegistrationResource(
             body=registration,
-            uri=domain_conf['directory'])
+            uri=domain_conf['account_uri'])
         LOG.debug("Update the regristration: {0}".format(registration_resource))
 
         registration_resource = client_acme.query_registration(registration_resource)
 
     net.account = registration_resource
-    LOG.info("Registration_resource (JSON)=== %s ", str(net))
+    
 
     return client_acme
 
